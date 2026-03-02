@@ -4,9 +4,7 @@ import statsmodels.api as sm
 from itertools import product
 import scipy.stats as sc
 from math import floor
-
 import importlib.resources as resources
-import pandas as pd
 
 def read_critical_values(sheet: str) -> pd.DataFrame:
     xlsx_path = resources.files("econmethods") / "CADF_Crit_Values.xlsx"
