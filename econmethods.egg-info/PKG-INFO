@@ -1,0 +1,26 @@
+Metadata-Version: 2.4
+Name: econmethods
+Version: 0.0.5
+Summary: A python package implementing various econometrical tests and estimators
+Home-page: https://github.com/NaturionBG/econmethods
+Author: NaturionBG
+Author-email: 7aegorsheryshev@gmail.com
+License: MIT
+Requires-Dist: statsmodels>=0.14.5
+Requires-Dist: numpy>=2.3.5
+Requires-Dist: pandas>=2.3.3
+Requires-Dist: scipy>=1.16.3
+Dynamic: author
+Dynamic: author-email
+Dynamic: description
+Dynamic: home-page
+Dynamic: license
+Dynamic: requires-dist
+Dynamic: summary
+
+* econmethods
+
+A library made specifically for an econometrics project. 
+Contains implementations of various estimators and tests.
+
+The library is not made by a professional, hence, the implemented methods may require a very scecific data struture.
