@@ -1,3 +1,3 @@
 from .Lib import CipsTest
 
-__all__ = ['CipsTest']
+__all__ = ['CipsTest', 'HausmanOneWay']

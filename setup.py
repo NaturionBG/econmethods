@@ -5,7 +5,7 @@ with open('README.md', 'r') as f:
   
 setup(
   name = 'econmethods',
-  version = '0.0.5',
+  version = '0.0.6',
   description='A python package implementing various econometrical tests and estimators',
   packages = find_packages(),
   long_description=long_desc,

@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: econmethods
-Version: 0.0.5
+Version: 0.0.6
 Summary: A python package implementing various econometrical tests and estimators
 Home-page: https://github.com/NaturionBG/econmethods
 Author: NaturionBG

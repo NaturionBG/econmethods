@@ -4,9 +4,8 @@ import statsmodels.api as sm
 from itertools import product
 import scipy.stats as sc
 from math import floor
-
 import importlib.resources as resources
-import pandas as pd
+from statsmodels.regression.mixed_linear_model import MixedLM
 
 def read_critical_values(sheet: str) -> pd.DataFrame:
     xlsx_path = resources.files("econmethods") / "CADF_Crit_Values.xlsx"
@@ -16,7 +15,7 @@ def read_critical_values(sheet: str) -> pd.DataFrame:
 class CipsTest:
   '''
   Implementation of the standard Cross-Sectionally Augmented Dickey-Fuller 
-  precedure to test for non-stationarity I(1) in panel data. Works only with a linear trend.
+  procedure to test for non-stationarity I(1) in panel data. Works only with a linear trend.
   ----
   The hypotheses are as follows:
   - *H0*: The Target variable is I(1)
@@ -183,3 +182,186 @@ class CipsTest:
   
   def __del__(self) -> None:
     pass
+
+
+class HausmanTwoWay:
+  '''
+  Implementation of the Hausman procedure to test whether it is more feasible to used random effects against fixed effects.
+  -
+  The Hypotheses are as follows
+  - *H0*: Cov(a_i, x_{it}) = 0
+  - *H1*: Cov(a_i, x_{it}) != 0\n
+  PARAMETERS:
+  --
+  -----
+  - *data*: A pandas DataFrame. Make sure that all items are introduced in this exact order by column index:\n
+    Make sure no columns contain Nan Values!
+    0 - your spatial unit. The data must be homogenous, e.g. only contries, regions, etc.
+    1 - your temporal window per panel. The data must be homogenous, e.g. only years, months, etc.
+    2 - Your target variable.
+    3+ - your exogenous variables.
+  - *RE_method*: the estimation method for a random effects model. \n
+    Choose between MLE(Maximum Likelihood Estimation) and GLS(Generalised Least Squares)\n
+    Values to input: "GLS" or "MLE"
+  - *level*: the statistical test significance level. 
+  ---------
+  RETURNS:
+  -
+  - Via instance.verdict() prints the verdict of the Hausman test according to the given parameters.
+  '''
+  def __init__(self, data: pd.DataFrame, RE_method: str = 'GLS', level: int = 5) -> None:
+    self.__df = data
+    self.__exog = len(data.columns[3:])
+    l =[]
+    for i in range(1, self.__exog+1):
+      l.append(f'x{i}')
+    self.__df.columns = ['SpUnit', 'time', 'target'] + l
+    self.__alpha = level/100
+    self.__rem = RE_method
+    self.__T = len(self.__df.time.unique())
+    self.__N = len(self.__df.SpUnit.unique())
+    self.verify()
+    
+  def verify(self) -> None:
+    if self.__rem.lower() not in ['mle', 'gls']:
+      raise TypeError('Invalid Estimation method for the RE model!')
+    
+  def build_FE(self) -> pd.DataFrame:
+    fe = self.__df.copy(deep=True)
+    for i, unit in eval(self.__df.SpUnit.unique()[1:]):
+      fe.loc[:, f'd{i}'] = np.where(fe.SpUnit == unit, 1, 0)
+    return fe.iloc[:, 2:]
+  
+  def build_cov(self, w_err: float) -> np.ndarray:
+    means = self.__df.copy(deep=True).groupby('region').iloc[:, 2:].mean().reset_index(drop=True)
+    sigma2 = (sm.OLS(means.iloc[:, 0], sm.add_constant(means.iloc[:, 1:])).fit()).mse_resid 
+    
+    sigma_u = sigma2 - w_err/self.__T
+    block = sigma_u * np.ones((self.__T, self.__T)) + w_err * np.eye(self.__T)
+    return block_diag(* [block]*self.__N)
+    
+  
+  def estimate(self) -> float:
+    fe_df = self.build_FE()
+    matrix = None
+    Chi = 0
+    fe_res = sm.OLS(fe_df.iloc[:, 0], sm.add_constant(fe_df.iloc[:, 1:])).fit()
+    if self.__rem.lower() == 'gls':
+      matrix = self.build_cov(fe_res.mse_resid)
+      re_res = sm.GLS(self.__df.iloc[:, 2], sm.add_constant(self.__df.iloc[:, 3:]), matrix).fit()
+    else:
+      re_res = MixedLM(self.__df.iloc[:, 2], sm.add_constant(self.__df.iloc[:, 3:], groups=self.__df.SpUnit)).fit(method='ml')
+    for b_fe, b_re, var_fe, var_re in zip(fe_res.params[1:], re_res.params[1:], fe_res.bse[1:]**2, re_res.bse[1:]**2):
+      Chi += (b_fe - b_re)**2 / (var_fe - var_re)
+    
+    return Chi
+  
+  def verdict(self) -> None:
+    Chi = self.estimate()
+    ch2 = sc.chi2(self.__exog)
+    p = 2*min(ch2.sf(Chi), ch2.cdf(Chi))
+    if p < self.__alpha:
+      print(f'P-Value: {p} < Alpha: {self.__alpha}. \n According to the Hausman test, you should use the FE (Fixed Effects) model. \n RE estimator: {self.__rem}')
+    else:
+      print(f'P-Value: {p} > Alpha: {self.__alpha}. \n According to the Hausman test, you should use the RE (Random Effects) model. \n RE estimator: {self.__rem}')
+  
+  def __del__(self) -> None:
+    pass
+
+
+
+class HausmanOneWay:
+  '''
+  Implementation of the Hausman procedure to test whether it is more feasible to used random effects against fixed effects.
+  -
+  The Hypotheses are as follows
+  - *H0*: Cov(a_i, x_{it}) = 0
+  - *H1*: Cov(a_i, x_{it}) != 0\n
+  PARAMETERS:
+  --
+  -----
+  - *data*: A pandas DataFrame. Make sure that all items are introduced in this exact order by column index:\n
+    Make sure no columns contain Nan Values!
+    0 - your spatial unit. The data must be homogenous, e.g. only contries, regions, etc.
+    1 - your temporal window per panel. The data must be homogenous, e.g. only years, months, etc.
+    2 - Your target variable.
+    3+ - your exogenous variables.
+  - *level*: the statistical test significance level. 
+  ---------
+  METHODOLOGY:
+  ------
+  - The Test prefers an MLE estimator for RE (Random Effects), 
+    which can be disrupted if the difference between FE and RE are considerably small. 
+    The test will opt for MLE estimation if sigma_u computed for GLS is greater than 0.
+------
+  RETURNS:
+  -
+  - Via instance.verdict() prints the verdict of the Hausman test according to the given parameters.
+  '''
+  def __init__(self, data: pd.DataFrame, level: int = 5) -> None:
+    self.__df = data
+    self.__exog = len(data.columns[3:])
+    self.__l =[]
+    for i in range(1, self.__exog+1):
+      self.__l.append(f'x{i}')
+    self.__df.columns = ['SpUnit', 'time', 'target'] + self.__l
+    self.__alpha = level/100
+    self.__RE = 'GLS'
+    self.__T = len(self.__df.time.unique())
+    self.__N = len(self.__df.SpUnit.unique())
+    
+    
+  def build_FE(self) -> pd.DataFrame:
+    fe = self.__df.copy(deep=True)
+    for i, unit in enumerate(self.__df.SpUnit.unique()[1:]):
+      fe.loc[:, f'd{i}'] = np.where(fe.SpUnit == unit, 1, 0)
+    return fe.iloc[:, 2:]
+  
+  def build_GLS(self, w_err: float) -> pd.DataFrame | None:
+    re = self.__df.copy(deep=True)
+    re = re.set_index(['SpUnit', 'time'])
+    means = re.groupby('SpUnit')[['target'] + self.__l].mean()
+    sigma2 = np.sum((sm.OLS(means.iloc[:, 0], sm.add_constant(means.iloc[:, 1:])).fit()).resid**2) / (self.__N - self.__exog - 1)
+    sigma_u = sigma2 - w_err/self.__T
+    if sigma_u <= 0:
+      sigma_u = 0
+    elif sigma_u > 0:
+      self.__RE = 'MLE'
+      return None
+    theta = 1 - np.sqrt(w_err/(w_err + self.__T * sigma_u))
+    temp = re.merge(means, on='SpUnit', suffixes=('', '_avg'))
+    re_df = pd.DataFrame()
+    for name in self.__df.columns[2:]:
+      re_df.loc[:, f'{name}_norm'] = temp.loc[:, name] - theta * temp.loc[:, f'{name}_avg']
+    return re_df
+      
+      
+  def estimate(self) -> float:
+    fe_df = self.build_FE()
+    Chi = 0
+    fe_res = sm.OLS(fe_df.iloc[:, 0], sm.add_constant(fe_df.iloc[:, 1:])).fit()
+    re_df = self.build_GLS(fe_res.mse_resid)
+    if re_df is not None:
+      re_res = sm.OLS(re_df.iloc[:, 0], sm.add_constant(re_df.iloc[:, 1:])).fit()
+    else:
+      re_res = sm.MixedLM(self.__df['target'], sm.add_constant(self.__df[self.__l]), groups=self.__df.SpUnit).fit(reml = True, maxiter=100_00)
+    for b_fe, b_re, var_fe, var_re in zip(fe_res.params[1:], re_res.params[1:], fe_res.bse[1:]**2, re_res.bse[1:]**2):
+      Chi += (b_fe - b_re)**2 / (var_fe - var_re)
+    
+    return Chi
+  
+  def verdict(self) -> None:
+    Chi = self.estimate()
+    ch2 = sc.chi2(self.__exog)
+    p = ch2.sf(Chi)
+    if p < self.__alpha:
+      print(f'P-Value: {p} < Alpha: {self.__alpha}. \n According to the Hausman test, you should use the FE (Fixed Effects) model. \n RE estimator: {self.__RE}')
+    else:
+      print(f'P-Value: {p} > Alpha: {self.__alpha}. \n According to the Hausman test, you should use the RE (Random Effects) model. \n RE estimator: {self.__RE}')
+  
+  def __del__(self) -> None:
+    pass
+
+
+
+
