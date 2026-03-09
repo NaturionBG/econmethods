@@ -206,7 +206,7 @@ class HausmanOneWay:
   METHODOLOGY:
   ------
   - The Test prefers an MLE estimator for RE (Random Effects), 
-    which can be disrupted if the difference between FE and RE are considerably small. 
+    which can be disrupted if the difference between FE and RE is considerably small. 
     The test will opt for MLE estimation if sigma_u computed for GLS is greater than 0.
 ------
   RETURNS:
@@ -234,30 +234,26 @@ class HausmanOneWay:
   
   def build_GLS(self, w_err: float) -> pd.DataFrame | None:
     re = self.__df.copy(deep=True)
-    re = re.set_index(['SpUnit', 'time'])
-    means = re.groupby('SpUnit')[['target'] + self.__l].mean()
-    sigma2 = np.sum((sm.OLS(means.iloc[:, 0], sm.add_constant(means.iloc[:, 1:])).fit()).resid**2) / (self.__N - self.__exog - 1)
-    sigma_u = sigma2 - w_err/self.__T
+    sigma2 = np.sum((sm.OLS(re.iloc[:, 2], sm.add_constant(re.iloc[:, 3:])).fit()).resid**2) / (self.__N*self.__T - self.__exog)
+    sigma_u = sigma2 - w_err
     if sigma_u <= 0:
       sigma_u = 0
     elif sigma_u > 0:
       self.__RE = 'MLE'
       return None
-    theta = 1 - np.sqrt(w_err/(w_err + self.__T * sigma_u))
-    temp = re.merge(means, on='SpUnit', suffixes=('', '_avg'))
-    re_df = pd.DataFrame()
-    for name in self.__df.columns[2:]:
-      re_df.loc[:, f'{name}_norm'] = temp.loc[:, name] - theta * temp.loc[:, f'{name}_avg']
-    return re_df
+    sig = np.full((self.__T, self.__T), sigma_u)
+    np.fill_diagonal(sig, sigma2)
+    matrix = np.kron(np.eye(self.__N), sig)
+    return matrix
       
       
   def estimate(self) -> float:
     fe_df = self.build_FE()
     Chi = 0
     fe_res = sm.OLS(fe_df.iloc[:, 0], sm.add_constant(fe_df.iloc[:, 1:])).fit()
-    re_df = self.build_GLS(fe_res.mse_resid)
-    if re_df is not None:
-      re_res = sm.OLS(re_df.iloc[:, 0], sm.add_constant(re_df.iloc[:, 1:])).fit()
+    matrix = self.build_GLS(np.sum(fe_res.resid**2) / (self.__N*(self.__T-1) - self.__exog))
+    if matrix is not None:
+      re_res = sm.GLS(self.__df.iloc[:, 2], sm.add_constant(self.__df.iloc[:, 3:]), matrix).fit()
     else:
       re_res = sm.MixedLM(self.__df['target'], sm.add_constant(self.__df[self.__l]), groups=self.__df.SpUnit).fit(reml = True, maxiter=100_00)
     for b_fe, b_re, var_fe, var_re in zip(fe_res.params[1:], re_res.params[1:], fe_res.bse[1:]**2, re_res.bse[1:]**2):
