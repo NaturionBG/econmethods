@@ -532,3 +532,61 @@ class FECM:
   
   def __del__(self) -> None:
     pass
+
+
+class CDTwoWay:
+  '''
+  Implementation of the CD test to validate/reject cross-sectional dependence.
+  -
+  H0: p_{ij} = 0 (No Significant Cross-Sectional Dependence)\n
+  H1: p_{ij} != 0 (Valid Cross-Sectional Dependence)\n
+  ---
+  PARAMETERS:
+  ----
+  - *df*: a Pandas DataFrame containing panel data. Make sure your data is structured in this exact order (by column index):\n
+    0 - Spatial units. The data must be homogenous, e.g. only cities, contries, regions, etc.\n
+    1 - Temporal units. The data must be homogenous, e.g. only years, months, quarters, etc. \n
+    2 - Your target/endogenous variable. The data must not contain NaN values.\n
+    3+ - Your exogenous variables. The data must not contain NaN values.\n
+  - *level*: The test significance level. Pass an integer, defaults to 5.
+  -----
+  RETURNS:
+  --
+  - Prints a string of text via the "verdict" method - the CD-test results.
+  '''
+  def __init__(self, df: pd.DataFrame, level: int = 5) -> None:
+    self.__df = df
+    self.__exog = len(self.__df.columns[3:])
+    self.__l = []
+    self.__alpha = level/100
+    for i in range(1, self.__exog+1):
+      self.__l.append(f'x{i}')
+    self.__df.columns = ['SpUnit', 'time', 'target'] + self.__l
+    self.__N = len(self.__df.SpUnit.unique())
+    self.__T = len(self.__df.time.unique())
+    
+  def __resids(self) -> list:
+    resids = []
+    for unit in self.__df.SpUnit.unique():
+      subdf = self.__df[self.__df.SpUnit == unit].copy(deep=True)
+      res = sm.OLS(subdf['target'], sm.add_constant(subdf[self.__l])).fit()
+      resids.append(res.resid)
+    return resids
+  
+  def __fit(self) -> float:
+    corrs = []
+    pairs = combinations(self.__resids(), r=2)
+    for a, b in pairs:
+      cr = np.corrcoef(a, b)[1, 0]
+      corrs.append(cr)
+    return np.sum(corrs)
+  
+  def verdict(self) -> None:
+    Z = sc.norm()
+    CD = self.__fit() * np.sqrt((2*self.__T)/(self.__N*(self.__N-1)))
+    pval = 2*min(Z.sf(CD), Z.cdf(CD))
+    if pval < self.__alpha:
+      print(f'p-value = {pval} < alpha = {self.__alpha}\n There is Significant Cross-Sectional Dependence in your data according to the CD-test. \n Significance level: {self.__alpha*100}%')
+    else:
+      print(f'p-value = {pval} > alpha = {self.__alpha} There is No Significant Cross-Sectional Dependence in your data according to the CD-test. \n Significance level: {self.__alpha*100}%')
+    

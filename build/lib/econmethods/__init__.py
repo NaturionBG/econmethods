@@ -1,3 +1,3 @@
-from .Lib import CipsTest, HausmanOneWay, FECM
+from .Lib import CipsTest, HausmanOneWay, FECM, CDTwoWay
 
-__all__ = ['CipsTest', 'HausmanOneWay', 'FECM']
+__all__ = ['CipsTest', 'HausmanOneWay', 'FECM', 'CDTwoWay']
