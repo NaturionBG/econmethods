@@ -275,4 +275,260 @@ class HausmanOneWay:
 
 
 
+class FECM:
+  '''
+  The implementation of a first-order ECM (Error Correction Model) estimation for panel data.
+  ----
+  ----
+  PARAMETERS:
+  ----
+  - *df*: a Pandas DataFrame containing panel data. Make sure your data is structured in this exact order (by column index):\n
+    0 - Spatial units. The data must be homogenous, e.g. only cities, contries, regions, etc.\n
+    1 - Temporal units. The data must be homogenous, e.g. only years, months, quarters, etc. \n
+    2 - Your target/endogenous variable. The data must not contain NaN values.\n
+    3+ - Your exogenous variables. The data must not contain NaN values.\n
+  - *effects*: Specify what effects your long-run model must have. The class will estimate both the short-run & long-run models.
+    Enter one of the following keywords: "fix" | "rand". "rand" by default.
+  - *trend*: Specify a trend of which order your target variable is. 0 by default - the data contains no trend.
+  - *n_lags*: Specify the maximum amount of lags to test on.
+  - *method*: Specify the method of ECM estimation. \n
+    Currently implemented methods:\n
+    - MG (Mean Group) - Choose this method of you believe all your coefficients may be simply heterogenous.
+    - CCEMG (Common Correlated Effects Mean Group) - Choose this one if you also believe that there is valid cross-sectional dependence in the data.
+    - CCEP (Common Correlated Effects Pooled) - Choose this one either if your data is lacking temporally or if you believe in the homogeneity of regressors.\n
+    Choose between the following keywords: ["MG", "CCEMG", "CCEP"]
+    - If CCE- is chosen, the mean target variable for forecasting the differences will be predicted using an AR(d) proccess, where d will be chosen automatically between 1 and n_lags.
+  - *coint*: Specify which exogenous variables will be included in the long-run model (A.K.A. are conitegrated with the TARGET variable). 
+      The rest will be included only in the short-run model.\n
+      Enter: a string containing 1 single variable / a list of strings in the following format.\n
+      (enumeration from left to right column-wise in your DataFrame):
+      - coint = "x1"
+      - coint = ["x1", "x3", ...]\n
+      Defaults to "x1"
+  - *include_x_diffs*: Specify whether the model should include the differences of exogenous variables. Defaults to True.
+  - *intercept*: Specify whether the ECM model should have an intercept. Defaults to True.
+  - *stat_vars*: a DataFrame of the same format as "df" - includes variables that will not be differenced and included into the ECM in their raw form. Ensure these variables are I(0). Defaults to None.
+  ----
+  RETURNS:
+  --
+  A python dictionary (dict) containing:
+    - Long-run estimation results | key = "lr_res"
+    - ECM (short-run) estimation results | key = "sr_res"\n
+    If a CCE- method is chosen:
+    - The AR(d) estimation results to forecast the cross-sectional mean | key = "ar"
+  '''
+  def __init__(self, df: pd.DataFrame, effects: str = 'rand', trend: int = 0, n_lags: int = 1, method: str = 'MG', coint: str | list[str] = 'x1', include_x_diffs: bool = True, intercept: bool = True, stat_vars: pd.DataFrame|None = None) -> None:
+    self.__df = df
+    self.__eff = effects.lower()
+    self.__t = trend
+    self.__C = intercept
+    self.__lag = n_lags
+    self.__method = method.lower()
+    self.__exog = len(df.columns[3:])
+    self.__l =[]
+    self.__stat_vars = stat_vars
+    self.__mean_names = ['target_avg']
+    self.__x_difs = include_x_diffs
+    for i in range(1, self.__exog+1):
+      self.__l.append(f'x{i}')
+      self.__mean_names.append(f'x{i}_avg')
+    self.__df.columns = ['SpUnit', 'time', 'target'] + self.__l
+    if isinstance(coint, list):
+      self.__lr_df = self.__df.copy(deep=True).loc[:, ['SpUnit', 'time', 'target', *coint]]
+    elif isinstance(coint, str):
+      self.__lr_df = self.__df.copy(deep=True).loc[:, ['SpUnit', 'time', 'target', coint]]
+    else:
+      raise TypeError('An invalid Type has been passed into the COINT parameter')
+    if self.__t > 0:
+      self.__lr_df = self.add_trend()
+    self.__N = len(self.__df.SpUnit.unique())
+    self.__T = len(self.__df.time.unique())
+    if self.__lag > self.__T**(1/3):
+      self.__lag = floor(self.__T**(1/3))
+      if self.__lag < 1:
+        self.__lag = 1
+    self.__verify()
+    self.__means = self.build_means()
+    if self.__method == 'ccemg' or method == 'ccep':
+      self.__ar = self.select_ar()
+    self.__lr = self.__estimate_lr()
+    self.__sr = self.build_sr()
+  
+  def __verify(self) -> None:
+    if self.__eff not in ['fix', 'rand']:
+      raise ValueError('Non-Valid panel effects type entered!')
+    if self.__t < 0:
+      raise ValueError('The Trend order cannot be lower than 0!')
+    if self.__method not in ['mg', 'ccemg', 'ccep']:
+      raise NotImplementedError('Either the estimation method has not been implemented yet, or it is invalid!')
+    
+  def add_trend(self) -> pd.DataFrame:
+    lst = []
+    for unit in self.__df.SpUnit.unique():
+      subdf = self.__lr_df[self.__lr_df.SpUnit == unit].copy(deep=True)
+      for i in range(1, self.__t+1):
+          subdf.loc[:, f't^{i}'] = np.linspace(1, len(self.__df.time.unique()), len(self.__df.time.unique()))**i
+      lst.append(subdf)
+    return pd.concat(lst)
+        
+  def build_means(self) -> pd.DataFrame:
+    mn = self.__df.copy(deep=True)
+    mn = mn.set_index('time')
+    means = mn.groupby('time')[['target'] + self.__l].mean()
+    means.columns = self.__mean_names
+    means = pd.concat([means, means.shift([1])], axis=1)
+    for var in means.columns[:2]:
+      if 'target' not in var:
+        if self.__x_difs:
+          means[f'{var}_diff'] = means[var] - means[f'{var}_1']
+          means = means.drop(columns=[f'{var}_1'])
+      else:
+        means[f'{var}_diff'] = means[var] - means[f'{var}_1']
+        means = means.drop(columns=[f'{var}_1'])
+    return means
+  
+  def build_GLS(self, w_err: float) -> pd.DataFrame:
+    re = self.__lr_df.copy(deep=True)
+    sigma2 = np.sum((sm.OLS(re.iloc[:, 2], sm.add_constant(re.iloc[:, 3:])).fit()).resid**2) / (self.__N*self.__T - self.__exog)
+    sigma_u = sigma2 - w_err
+    if sigma_u <= 0:
+      sigma_u = 0
+    sig = np.full((self.__T, self.__T), sigma_u)
+    np.fill_diagonal(sig, sigma2)
+    matrix = np.kron(np.eye(self.__N), sig)
+    return matrix
+  
+  def build_FE(self) -> pd.DataFrame:
+    lr = self.__lr_df.copy(deep=True)
+    for i, unit in enumerate(lr.SpUnit.unique()[1:], start=1):
+        lr[f'd{i}'] = np.where(lr.SpUnit == unit, 1, 0)
+    return lr
+  
+  def __estimate_lr(self) -> pd.DataFrame:
+    if self.__eff == 'fix':
+      lr_fe = self.build_FE()
+      res_lr = sm.OLS(lr_fe.loc[:, 'target'], sm.add_constant(lr_fe.iloc[:, 3:])).fit()
+      return res_lr
+    else:
+      lr_fe = self.build_FE()
+      resid = np.sum(sm.OLS(lr_fe.loc[:, 'target'], sm.add_constant(lr_fe.iloc[:, 3:])).fit().resid**2) / (self.__N*(self.__T - 1) - self.__exog)
+      lr_re_matrix = self.build_GLS(resid)
+      return sm.GLS(self.__lr_df.loc[:, 'target'], sm.add_constant(self.__lr_df.iloc[:, 3:]), lr_re_matrix).fit()
+  
+  def select_ar(self) -> Any:
+    current_d = self.__lag+1
+    while current_d >= 1:
+      frame = pd.DataFrame(self.__means.target_avg)
+      temp = []
+      for lag in range(1, current_d+1):
+        frame.loc[:, f'y_avg{lag}'] = frame['target_avg'].shift(lag)
+        temp.append(f'y_avg{lag}')
+      frame = frame.dropna()
+      part_res = sm.OLS(frame.target_avg, frame[temp]).fit()
+      if part_res.pvalues[temp[-1]] < 0.05:
+        break
+      else:
+        current_d -=1
+    print(f'Selected AR lag amount: {current_d}')
+    return part_res
+  
+  def get_ccemg_frames(self, max_lag: int) -> list[pd.DataFrame]:
+    subdfs = []
+    for unit in self.__df.SpUnit.unique():
+      subdf = self.__df[self.__df.SpUnit == unit].copy(deep=True)
+      if self.__x_difs:
+        for var in self.__l:
+          subdf[f'{var}_lag1'] = subdf[var].shift(1)
+          subdf[f'{var}_diff'] = subdf[var]- subdf[f'{var}_lag1']
+          subdf = subdf.drop(columns = [f'{var}_lag1'])
+      subdf['target_lag1'] = subdf['target'].shift(1)
+      subdf.insert(2, 'target_diff', subdf['target'] - subdf['target_lag1'])
+      subdf = subdf.drop(columns = ['target_lag1', *self.__l, 'target'])
+      subdf['error'] = subdf.error.shift(1)
+      subdf = pd.concat([subdf.reset_index(drop=True), self.__means.reset_index(drop=True)], axis=1)
+      if self.__stat_vars is not None:
+        stat_subdf = self.__stat_vars[self.__stat_vars.SpUnit == unit].copy(deep=True)
+        subdf = pd.concat([subdf.reset_index(drop=True), stat_subdf.reset_index(drop=True)], axis=1)
+      subdfs.append(subdf.dropna())
+    return subdfs
+      
+  def get_mg_frames(self, max_lag: int) -> list[pd.DataFrame]:
+    subdfs = []
+    for unit in self.__df.SpUnit.unique():
+      subdf = self.__df[self.__df.SpUnit == unit].copy(deep=True)
+      if self.__x_difs:
+        for var in self.__l:
+          subdf[f'{var}_lag1'] = subdf[var].shift(1)
+          subdf[f'{var}_diff'] = subdf[var]- subdf[f'{var}_lag1']
+          subdf = subdf.drop(columns = [f'{var}_lag1'])
+      subdf['target_lag1'] = subdf['target'].shift(1)
+      subdf.insert(2, 'target_diff', subdf['target'] - subdf['target_lag1'])
+      subdf = subdf.drop(columns = ['target_lag1', *self.__l, 'target'])
+      subdf['error'] = subdf.error.shift(1)
+      if self.__stat_vars is not None:
+        stat_subdf = self.__stat_vars[self.__stat_vars.SpUnit == unit].copy(deep=True)
+        subdf = pd.concat([subdf.reset_index(drop=True), stat_subdf.reset_index(drop=True)], axis=1)
+      subdfs.append(subdf.dropna())
+    return subdfs
+      
+  def build_sr(self) -> pd.DataFrame:
+    self.__df = pd.concat([self.__df, pd.Series(self.__lr.resid, name='error')], axis=1)
+    est = []
+    if self.__method == 'ccemg':
+      units = self.get_ccemg_frames(self.__lag)
+      for model in units:
+        if self.__C:
+          est.append(sm.OLS(model['target_diff'], sm.add_constant(model.iloc[:, 3:])).fit())
+        else:
+          est.append(sm.OLS(model['target_diff'], model.iloc[:, 3:]).fit())
+      return est
+    elif self.__method == 'mg':
+      units = self.get_mg_frames(self.__lag)
+      for model in units:
+        if self.__C:
+          est.append(sm.OLS(model['target_diff'], sm.add_constant(model.iloc[:, 3:])).fit())
+        else:
+          est.append(sm.OLS(model['target_diff'], model.iloc[:, 3:]).fit())
+      return est
+    elif self.__method == 'ccep':
+      units = self.get_ccemg_frames(self.__lag)
+      pool = pd.concat(units, axis=0)
+      if self.__C:
+        est.append(sm.OLS(pool['target_diff'], sm.add_constant(pool.iloc[:, 3:])).fit())
+      else:
+        est.append(sm.OLS(pool['target_diff'], pool.iloc[:, 3:]).fit())
+      return est
 
+  def fit(self) -> dict:
+    dct = dict()
+    if self.__method == 'ccep':
+      dct['sr_res'] = self.__sr[0]
+      dct['lr_res'] = self.__lr
+      dct['ar'] = self.__ar
+    elif self.__method == 'ccemg' or self.__method == 'mg':
+      dct['lr_res'] = self.__lr
+      if self.__method == 'ccemg':
+        dct['ar'] = self.__ar
+      coefs = []
+      F_pvalues = []
+      tpvalues = []
+      rsq = []
+      for result in self.__sr:
+        coefs.append(result.params)
+        F_pvalues.append(result.f_pvalue)
+        tpvalues.append(result.pvalues)
+        rsq.append(result.rsquared)
+      coef_mean = pd.DataFrame(pd.concat(coefs, axis=1).mean(axis=1), columns=['Mean Group coefs'])
+      F_pval_mean = np.array(F_pvalues).mean()
+      tpvalues_mean = pd.DataFrame(pd.concat(tpvalues, axis=1).mean(axis=1), columns = ['Mean Group T-pvalues'])
+      rsq_mean = np.array(rsq).mean()
+      res = {
+        'Rsquared': rsq_mean,
+        'F_Pvalue': F_pval_mean,
+        'coefs': pd.concat([coef_mean, tpvalues_mean], axis=1)
+      }
+      dct['sr_res'] = res
+    return dct
+  
+  def __del__(self) -> None:
+    pass
