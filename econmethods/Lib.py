@@ -1,11 +1,12 @@
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm
-from itertools import product
+from itertools import product, combinations
 import scipy.stats as sc
 from math import floor
 import importlib.resources as resources
 from statsmodels.regression.mixed_linear_model import MixedLM
+from typing import Any
 
 def read_critical_values(sheet: str) -> pd.DataFrame:
     xlsx_path = resources.files("econmethods") / "CADF_Crit_Values.xlsx"
