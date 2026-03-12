@@ -202,7 +202,8 @@ class HausmanOneWay:
     1 - your temporal window per panel. The data must be homogenous, e.g. only years, months, etc.
     2 - Your target variable.
     3+ - your exogenous variables.
-  - *level*: the statistical test significance level. 
+  - *level*: the statistical test significance level.
+  - *force_GLS*: Choose if MLE diverges.
   ---------
   METHODOLOGY:
   ------
@@ -214,10 +215,11 @@ class HausmanOneWay:
   -
   - Via instance.verdict() prints the verdict of the Hausman test according to the given parameters.
   '''
-  def __init__(self, data: pd.DataFrame, level: int = 5) -> None:
+  def __init__(self, data: pd.DataFrame, force_GLS: bool = False, level: int = 5) -> None:
     self.__df = data
     self.__exog = len(data.columns[3:])
     self.__l =[]
+    self.__fgls = force_GLS
     for i in range(1, self.__exog+1):
       self.__l.append(f'x{i}')
     self.__df.columns = ['SpUnit', 'time', 'target'] + self.__l
@@ -240,8 +242,9 @@ class HausmanOneWay:
     if sigma_u <= 0:
       sigma_u = 0
     elif sigma_u > 0:
-      self.__RE = 'MLE'
-      return None
+      if not self.__fgls:
+        self.__RE = 'MLE'
+        return None
     sig = np.full((self.__T, self.__T), sigma_u)
     np.fill_diagonal(sig, sigma2)
     matrix = np.kron(np.eye(self.__N), sig)
@@ -309,6 +312,7 @@ class FECM:
   - *include_x_diffs*: Specify whether the model should include the differences of exogenous variables. Defaults to True.
   - *intercept*: Specify whether the ECM model should have an intercept. Defaults to True.
   - *stat_vars*: a DataFrame of the same format as "df" - includes variables that will not be differenced and included into the ECM in their raw form. Ensure these variables are I(0). Defaults to None.
+  - *lr_const*: Specify whether the long-run model should have a constant.
   ----
   RETURNS:
   --
@@ -318,7 +322,7 @@ class FECM:
     If a CCE- method is chosen:
     - The AR(d) estimation results to forecast the cross-sectional mean | key = "ar"
   '''
-  def __init__(self, df: pd.DataFrame, effects: str = 'rand', trend: int = 0, n_lags: int = 1, method: str = 'MG', coint: str | list[str] = 'x1', include_x_diffs: bool = True, intercept: bool = True, stat_vars: pd.DataFrame|None = None) -> None:
+  def __init__(self, df: pd.DataFrame, effects: str = 'rand', trend: int = 0, n_lags: int = 1, method: str = 'MG', coint: str | list[str] = 'x1', include_x_diffs: bool = True, intercept: bool = True, stat_vars: pd.DataFrame|None = None, lr_const: bool = False) -> None:
     self.__df = df
     self.__eff = effects.lower()
     self.__t = trend
@@ -330,6 +334,12 @@ class FECM:
     self.__stat_vars = stat_vars
     self.__mean_names = ['target_avg']
     self.__x_difs = include_x_diffs
+    self.__stat = []
+    self.__lr_c = lr_const
+    if stat_vars is not None:
+      for i in range(1, len(stat_vars.columns[2:])+1):
+        self.__stat.append(f'stat{i}')
+      self.__stat_vars.columns = ['SpUnit', 'time'] + self.__stat
     for i in range(1, self.__exog+1):
       self.__l.append(f'x{i}')
       self.__mean_names.append(f'x{i}_avg')
@@ -388,7 +398,7 @@ class FECM:
         means = means.drop(columns=[f'{var}_1'])
     return means
   
-  def build_GLS(self, w_err: float) -> pd.DataFrame:
+  def build_GLS(self, w_err: float) -> np.ndarray:
     re = self.__lr_df.copy(deep=True)
     sigma2 = np.sum((sm.OLS(re.iloc[:, 2], sm.add_constant(re.iloc[:, 3:])).fit()).resid**2) / (self.__N*self.__T - self.__exog)
     sigma_u = sigma2 - w_err
@@ -408,13 +418,21 @@ class FECM:
   def __estimate_lr(self) -> pd.DataFrame:
     if self.__eff == 'fix':
       lr_fe = self.build_FE()
-      res_lr = sm.OLS(lr_fe.loc[:, 'target'], sm.add_constant(lr_fe.iloc[:, 3:])).fit()
+      if self.__lr_c:
+        res_lr = sm.OLS(lr_fe.loc[:, 'target'], sm.add_constant(lr_fe.iloc[:, 3:])).fit()
+      else:
+        res_lr = sm.OLS(lr_fe.loc[:, 'target'], lr_fe.iloc[:, 3:]).fit()
       return res_lr
     else:
       lr_fe = self.build_FE()
-      resid = np.sum(sm.OLS(lr_fe.loc[:, 'target'], sm.add_constant(lr_fe.iloc[:, 3:])).fit().resid**2) / (self.__N*(self.__T - 1) - self.__exog)
-      lr_re_matrix = self.build_GLS(resid)
-      return sm.GLS(self.__lr_df.loc[:, 'target'], sm.add_constant(self.__lr_df.iloc[:, 3:]), lr_re_matrix).fit()
+      if self.__lr_c:
+        resid = np.sum(sm.OLS(lr_fe.loc[:, 'target'], sm.add_constant(lr_fe.iloc[:, 3:])).fit().resid**2) / (self.__N*(self.__T - 1) - self.__exog)
+        lr_re_matrix = self.build_GLS(resid)
+        return sm.GLS(self.__lr_df.loc[:, 'target'], sm.add_constant(self.__lr_df.iloc[:, 3:]), lr_re_matrix).fit()
+      else:
+        resid = np.sum(sm.OLS(lr_fe.loc[:, 'target'], lr_fe.iloc[:, 3:]).fit().resid**2) / (self.__N*(self.__T - 1) - self.__exog)
+        lr_re_matrix = self.build_GLS(resid)
+        return sm.GLS(self.__lr_df.loc[:, 'target'], self.__lr_df.iloc[:, 3:], lr_re_matrix).fit()
   
   def select_ar(self) -> Any:
     current_d = self.__lag+1
@@ -449,7 +467,7 @@ class FECM:
       subdf = pd.concat([subdf.reset_index(drop=True), self.__means.reset_index(drop=True)], axis=1)
       if self.__stat_vars is not None:
         stat_subdf = self.__stat_vars[self.__stat_vars.SpUnit == unit].copy(deep=True)
-        subdf = pd.concat([subdf.reset_index(drop=True), stat_subdf.reset_index(drop=True)], axis=1)
+        subdf = pd.concat([subdf.reset_index(drop=True), stat_subdf.iloc[:, 2:].reset_index(drop=True)], axis=1)
       subdfs.append(subdf.dropna())
     return subdfs
       
@@ -468,7 +486,7 @@ class FECM:
       subdf['error'] = subdf.error.shift(1)
       if self.__stat_vars is not None:
         stat_subdf = self.__stat_vars[self.__stat_vars.SpUnit == unit].copy(deep=True)
-        subdf = pd.concat([subdf.reset_index(drop=True), stat_subdf.reset_index(drop=True)], axis=1)
+        subdf = pd.concat([subdf.reset_index(drop=True), stat_subdf.iloc[:, 2:].reset_index(drop=True)], axis=1)
       subdfs.append(subdf.dropna())
     return subdfs
       
