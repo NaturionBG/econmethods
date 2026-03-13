@@ -6,6 +6,7 @@ import scipy.stats as sc
 from math import floor
 import importlib.resources as resources
 from statsmodels.regression.mixed_linear_model import MixedLM
+from statsmodels.stats.diagnostic import het_goldfeldquandt
 from typing import Any
 
 def read_critical_values(sheet: str) -> pd.DataFrame:
@@ -185,7 +186,6 @@ class CipsTest:
     pass
 
 
-
 class HausmanOneWay:
   '''
   Implementation of the Hausman procedure to test whether it is more feasible to used random effects against fixed effects.
@@ -195,7 +195,6 @@ class HausmanOneWay:
   - *H1*: Cov(a_i, x_{it}) != 0\n
   PARAMETERS:
   --
-  -----
   - *data*: A pandas DataFrame. Make sure that all items are introduced in this exact order by column index:\n
     Make sure no columns contain Nan Values!
     0 - your spatial unit. The data must be homogenous, e.g. only contries, regions, etc.
@@ -276,7 +275,6 @@ class HausmanOneWay:
   
   def __del__(self) -> None:
     pass
-
 
 
 class FECM:
@@ -556,10 +554,10 @@ class FECM:
 class CDTwoWay:
   '''
   Implementation of the CD test to validate/reject cross-sectional dependence.
-  -
+  Hypotheses:
+  --
   H0: p_{ij} = 0 (No Significant Cross-Sectional Dependence)\n
   H1: p_{ij} != 0 (Valid Cross-Sectional Dependence)\n
-  ---
   PARAMETERS:
   ----
   - *df*: a Pandas DataFrame containing panel data. Make sure your data is structured in this exact order (by column index):\n
@@ -608,4 +606,77 @@ class CDTwoWay:
       print(f'p-value = {pval} < alpha = {self.__alpha}\n There is Significant Cross-Sectional Dependence in your data according to the CD-test. \n Significance level: {self.__alpha*100}%')
     else:
       print(f'p-value = {pval} > alpha = {self.__alpha} There is No Significant Cross-Sectional Dependence in your data according to the CD-test. \n Significance level: {self.__alpha*100}%')
+
+
+class SlopeHomogeneityF:
+  '''
+  <h2>The implementation of the F-test for data slope Homogeneity in panel data.</h2>
+  <hr>
+  <h2>Hypotheses:</h2>
+  <hr>
+  <ul>
+  <li> <em>H0</em>: b_i = b_j given that i != j</li>
+  <li><em>H_1</em>: b_i != b_j for at least one such pair of (i, j) that i != j </li>
+  </ul>
+  <hr>
+  <h2>PARAMETERS:</h2>
+  <hr>
+  <ul>
+  <li> <strong>df</strong>: a Pandas DataFrame containing panel data. Make sure your data is structured in this exact order (by column index):
+    <ul>
+    <li>0 - Spatial units. The data must be homogenous, e.g. only cities, contries, regions, etc.</li>
+    <li>1 - Temporal units. The data must be homogenous, e.g. only years, months, quarters, etc.</li>
+    <li>2 - Your target/endogenous variable. The data must not contain NaN values.</li>
+    <li>3+ - Your exogenous variables. The data must not contain NaN values.</li>
+    </ul>
+  <li> <strong>level</strong>: Your significance level to test at. Defaults to 5%.</li>
+  </ul>
+  <hr>
+    <h3><em>Note that this test has got certain assumptions, such as error homoskedasticity, N < T.
+     The <FTwoWay> instance will check for these conditions to be met, and will yield an error if they are not.</em></h3>
+  <hr>
+  <h2>RETURNS:</h2>
+  <ol>
+  <li>Via the instance.verdict() method - prints the result of the F-test.</li>
+  </ol>
+  '''
+  def __init__(self, df: pd.DataFrame, level: int = 5) -> None:
+    self.__df = df
+    self.__l = []
+    self.__alpha = level/100
+    self.__k = 0
+    for i, ex in enumerate(self.__df.columns[3:], 1):
+      self.__k +=1
+      self.__l.append(f'x{i}')
+    self.__df.columns = ['SpUnit', 'time', 'target'] + self.__l
+    self.__N = len(self.__df.SpUnit.unique())
+    self.__T = len(self.__df.time.unique())
+    self.__homo_res = het_goldfeldquandt(self.__df['target'], self.__df.iloc[:, 3:])
+    self.__verify()
     
+  def __verify(self) -> None:
+    if self.__N > self.__T:
+      raise AssertionError('The F-test for slope Homogeneity assumes that N< T!')
+    if self.__homo_res[1] < self.__alpha:
+      raise AssertionError('The Data contains Heteroskedastic errors according to the Goldfeld-Quandt test!')
+  
+  def fit(self) -> float | int:
+    USSR = 0
+    RSSR = sm.OLS(self.__df.iloc[:, 2], sm.add_constant(self.__df.iloc[:, 3:])).fit().ssr
+    for unit in self.__df.SpUnit.unique():
+      subdf = self.__df[self.__df.SpUnit == unit]
+      USSR += sm.OLS(subdf.iloc[:, 2], sm.add_constant(subdf.iloc[:, 3:])).fit().ssr
+    F = round(self.__N * (self.__T - self.__k - 1) / (self.__k * (self.__N - 1)))* (RSSR - USSR)/USSR
+    return F
+  
+  def verdict(self) -> None:
+    f = sc.f(self.__k*(self.__N - 1), self.__N * (self.__T - self.__k - 1))
+    pval = f.sf(self.fit())
+    if pval < self.__alpha:
+      print(f'P-Value: {pval} < Alpha: {self.__alpha}, hence your data does not fit slope homogeneity.')
+    else:
+      print(f'P-Value: {pval} < Alpha: {self.__alpha}, hence your data fits slope homogeneity.')
+    
+  def __del__(self) -> None:
+    pass
+  
