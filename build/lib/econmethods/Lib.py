@@ -630,6 +630,7 @@ class SlopeHomogeneityF:
     <li>3+ - Your exogenous variables. The data must not contain NaN values.</li>
     </ul>
   <li> <strong>level</strong>: Your significance level to test at. Defaults to 5%.</li>
+  <li> <strong>intercept</strong>: Specify whether your model has an intercept. Defaults to True.</li>
   </ul>
   <hr>
     <h3><em>Note that this test has got certain assumptions, such as error homoskedasticity, N < T.
@@ -640,9 +641,10 @@ class SlopeHomogeneityF:
   <li>Via the instance.verdict() method - prints the result of the F-test.</li>
   </ol>
   '''
-  def __init__(self, df: pd.DataFrame, level: int = 5) -> None:
+  def __init__(self, df: pd.DataFrame, level: int = 5, intercept: bool = True) -> None:
     self.__df = df
     self.__l = []
+    self.__C = intercept
     self.__alpha = level/100
     self.__k = 0
     for i, ex in enumerate(self.__df.columns[3:], 1):
@@ -662,10 +664,16 @@ class SlopeHomogeneityF:
   
   def fit(self) -> float | int:
     USSR = 0
-    RSSR = sm.OLS(self.__df.iloc[:, 2], sm.add_constant(self.__df.iloc[:, 3:])).fit().ssr
+    if self.__C:
+      RSSR = sm.OLS(self.__df.iloc[:, 2], sm.add_constant(self.__df.iloc[:, 3:])).fit().ssr
+    else:
+      RSSR = sm.OLS(self.__df.iloc[:, 2], self.__df.iloc[:, 3:]).fit().ssr
     for unit in self.__df.SpUnit.unique():
       subdf = self.__df[self.__df.SpUnit == unit]
-      USSR += sm.OLS(subdf.iloc[:, 2], sm.add_constant(subdf.iloc[:, 3:])).fit().ssr
+      if self.__C:
+        USSR += sm.OLS(subdf.iloc[:, 2], sm.add_constant(subdf.iloc[:, 3:])).fit().ssr
+      else:
+        USSR += sm.OLS(subdf.iloc[:, 2], subdf.iloc[:, 3:]).fit().ssr
     F = round(self.__N * (self.__T - self.__k - 1) / (self.__k * (self.__N - 1)))* (RSSR - USSR)/USSR
     return F
   
