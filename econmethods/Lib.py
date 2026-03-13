@@ -683,7 +683,7 @@ class SlopeHomogeneityF:
     if pval < self.__alpha:
       print(f'P-Value: {pval} < Alpha: {self.__alpha}, hence your data does not fit slope homogeneity.')
     else:
-      print(f'P-Value: {pval} < Alpha: {self.__alpha}, hence your data fits slope homogeneity.')
+      print(f'P-Value: {pval} > Alpha: {self.__alpha}, hence your data fits slope homogeneity.')
     
   def __del__(self) -> None:
     pass
