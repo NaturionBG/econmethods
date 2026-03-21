@@ -388,7 +388,7 @@ class FECM:
     means = mn.groupby('time')[['target'] + self.__l].mean()
     means.columns = self.__mean_names
     means = pd.concat([means, means.shift([1])], axis=1)
-    for var in means.columns:
+    for var in means.columns[:len(self.__l)]:
       if 'target' not in var:
         if self.__x_difs:
           means[f'{var}_diff'] = means[var] - means[f'{var}_1']
