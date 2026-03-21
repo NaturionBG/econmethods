@@ -45,12 +45,13 @@ class CipsTest:
     the test will choose the best lag amount from 1 to n_lags based on AIC (Akaike Information Criterion) 
     
   - *level*: Value of significance to conduct the test at (in %%). Only 5 and 1% are allowed.
+  - *log_target*: Specify whether the test shall aplly a natural logarithm to your target variable. Defaults to True.
   -----------------------------
   RETURNS:
   --
   via instance.verdict() -> None: Prints the verdict of the test based on the parameters set by the user.
   '''
-  def __init__(self, df: pd.DataFrame, T: int, N: int, trend: bool =  False, poly_trend: int = 1, intercept: bool = False, n_lags: int = 2, level: int = 5) -> None:
+  def __init__(self, df: pd.DataFrame, T: int, N: int, trend: bool =  False, poly_trend: int = 1, intercept: bool = False, n_lags: int = 2, level: int = 5, log_target: bool = True) -> None:
     CipsTest.__build_tables()
     self.__df = df
     self.__L = 1
@@ -65,7 +66,8 @@ class CipsTest:
         self.__n_lags = 1
     self.__alpha = level/100
     self.__df = self.__df.rename(columns={self.__df.columns[0]:'SpUnit', self.__df.columns[1]:'time', self.__df.columns[2]:'target'})
-    self.__df.target = np.log(self.__df.target)
+    if log_target:
+      self.__df.target = np.log(self.__df.target)
     self.__poly = poly_trend
     if self.__trend:
       if self.__poly > 1:
@@ -527,21 +529,22 @@ class FECM:
       if self.__method == 'ccemg':
         dct['ar'] = self.__ar
       coefs = []
-      F_pvalues = []
-      tpvalues = []
       rsq = []
       for result in self.__sr:
         coefs.append(result.params)
-        F_pvalues.append(result.f_pvalue)
-        tpvalues.append(result.pvalues)
         rsq.append(result.rsquared)
-      coef_mean = pd.DataFrame(pd.concat(coefs, axis=1).mean(axis=1), columns=['Mean Group coefs'])
-      F_pval_mean = np.array(F_pvalues).mean()
-      tpvalues_mean = pd.DataFrame(pd.concat(tpvalues, axis=1).mean(axis=1), columns = ['Mean Group T-pvalues'])
+      coef_mean = pd.concat(coefs, axis=1).mean(axis=1)
+      coef_mean.name = 'Mean Coefs'
+      coef_std = pd.concat(coefs, axis=1).std(axis=1)
+      coef_mse = coef_std/np.sqrt(self.__N)
+      t_means = coef_mean / coef_mse
+      mg_W = sc.chi2(self.__exog).sf(np.sum(coef_mean**2 / coef_mse**2))
+      tpvalues_mean = t_means.apply(lambda x: 2*min(sc.t(self.__N-1).cdf(x), sc.t(self.__N-1).sf(x)))
+      tpvalues_mean.name = 'T-pvalues'
       rsq_mean = np.array(rsq).mean()
       res = {
         'Rsquared': rsq_mean,
-        'F_Pvalue': F_pval_mean,
+        'W_Pvalue': mg_W,
         'coefs': pd.concat([coef_mean, tpvalues_mean], axis=1)
       }
       dct['sr_res'] = res
@@ -631,6 +634,7 @@ class SlopeHomogeneityF:
     </ul>
   <li> <strong>level</strong>: Your significance level to test at. Defaults to 5%.</li>
   <li> <strong>intercept</strong>: Specify whether your model has an intercept. Defaults to True.</li>
+  <li> <strong>skip_premise</strong>: Set to True if you wish to ignore heteroskedasticity. Not a recommended option, parameter defaults to False</li>
   </ul>
   <hr>
     <h3><em>Note that this test has got certain assumptions, such as error homoskedasticity, N < T.
@@ -641,12 +645,13 @@ class SlopeHomogeneityF:
   <li>Via the instance.verdict() method - prints the result of the F-test.</li>
   </ol>
   '''
-  def __init__(self, df: pd.DataFrame, level: int = 5, intercept: bool = True) -> None:
+  def __init__(self, df: pd.DataFrame, level: int = 5, intercept: bool = True, skip_premise: bool = False) -> None:
     self.__df = df
     self.__l = []
     self.__C = intercept
     self.__alpha = level/100
     self.__k = 0
+    self.__skip = skip_premise
     for i, ex in enumerate(self.__df.columns[3:], 1):
       self.__k +=1
       self.__l.append(f'x{i}')
@@ -660,7 +665,10 @@ class SlopeHomogeneityF:
     if self.__N > self.__T:
       raise AssertionError('The F-test for slope Homogeneity assumes that N< T!')
     if self.__homo_res[1] < self.__alpha:
-      raise AssertionError('The Data contains Heteroskedastic errors according to the Goldfeld-Quandt test!')
+      if not self.__skip:
+        raise AssertionError('The Data contains Heteroskedastic errors according to the Goldfeld-Quandt test!')
+      else:
+        pass
   
   def fit(self) -> float | int:
     USSR = 0
