@@ -309,10 +309,10 @@ class FECM:
       - coint = "x1"
       - coint = ["x1", "x3", ...]\n
       Defaults to "x1"
-  - *include_x_diffs*: Specify whether the model should include the differences of exogenous variables. Defaults to True.
   - *intercept*: Specify whether the ECM model should have an intercept. Defaults to True.
   - *stat_vars*: a DataFrame of the same format as "df" - includes variables that will not be differenced and included into the ECM in their raw form. Ensure these variables are I(0). Defaults to None.
   - *lr_const*: Specify whether the long-run model should have a constant.
+  - *autorem*: Enables/Disables automatic removal of insignificant regression coefficients in the ECM. Defaults to True.
   ----
   RETURNS:
   --
@@ -322,18 +322,18 @@ class FECM:
     If a CCE- method is chosen:
     - The AR(d) estimation results to forecast the cross-sectional mean | key = "ar"
   '''
-  def __init__(self, df: pd.DataFrame, effects: str = 'rand', trend: int = 0, n_lags: int = 1, method: str = 'MG', coint: str | list[str] = 'x1', include_x_diffs: bool = True, intercept: bool = True, stat_vars: pd.DataFrame|None = None, lr_const: bool = False) -> None:
+  def __init__(self, df: pd.DataFrame, effects: str = 'rand', trend: int = 0, n_lags: int = 1, method: str = 'MG', coint: str | list[str] = 'x1', intercept: bool = True, stat_vars: pd.DataFrame|None = None, lr_const: bool = False, autorem: bool = True) -> None:
     self.__df = df
     self.__eff = effects.lower()
     self.__t = trend
+    self.__autorem = autorem
     self.__C = intercept
     self.__lag = n_lags
     self.__method = method.lower()
     self.__exog = len(df.columns[3:])
     self.__l =[]
     self.__stat_vars = stat_vars
-    self.__mean_names = ['target_avg']
-    self.__x_difs = include_x_diffs
+    self.__mean_names = ['target_avg_l1']
     self.__stat = []
     self.__lr_c = lr_const
     if stat_vars is not None:
@@ -360,9 +360,10 @@ class FECM:
         self.__lag = 1
     self.__verify()
     self.__means = self.build_means()
-    if self.__method == 'ccemg' or method == 'ccep':
-      self.__ar = self.select_ar()
     self.__lr = self.__estimate_lr()
+    self.__df = pd.concat([self.__df, pd.Series(self.__lr.resid, name='error')], axis=1)
+    self.__ccemg_units = self.get_ccemg_frames(1)
+    self.__mg_units = self.get_mg_frames(1)
     self.__sr = self.build_sr()
   
   def __verify(self) -> None:
@@ -387,15 +388,7 @@ class FECM:
     mn = mn.set_index('time')
     means = mn.groupby('time')[['target'] + self.__l].mean()
     means.columns = self.__mean_names
-    means = pd.concat([means, means.shift([1])], axis=1)
-    for var in means.columns[:len(self.__l)+1]:
-      if 'target' not in var:
-        if self.__x_difs:
-          means[f'{var}_diff'] = means[var] - means[f'{var}_1']
-        means = means.drop(columns=[f'{var}_1'])
-      else:
-        means[f'{var}_diff'] = means[var] - means[f'{var}_1']
-        means = means.drop(columns=[f'{var}_1'])
+    means['target_avg_l1'] = means['target_avg_l1'].shift(1)
     return means
   
   def build_GLS(self, w_err: float) -> np.ndarray:
@@ -411,8 +404,12 @@ class FECM:
   
   def build_FE(self) -> pd.DataFrame:
     lr = self.__lr_df.copy(deep=True)
-    for i, unit in enumerate(lr.SpUnit.unique()[1:], start=1):
-        lr[f'd{i}'] = np.where(lr.SpUnit == unit, 1, 0)
+    if self.__lr_c:
+      for i, unit in enumerate(lr.SpUnit.unique()[1:], start=1):
+          lr[f'd{i}'] = np.where(lr.SpUnit == unit, 1, 0)
+    else:
+      for i, unit in enumerate(lr.SpUnit.unique(), start=1):
+          lr[f'd{i}'] = np.where(lr.SpUnit == unit, 1, 0)
     return lr
   
   def __estimate_lr(self) -> pd.DataFrame:
@@ -422,6 +419,20 @@ class FECM:
         res_lr = sm.OLS(lr_fe.loc[:, 'target'], sm.add_constant(lr_fe.iloc[:, 3:])).fit()
       else:
         res_lr = sm.OLS(lr_fe.loc[:, 'target'], lr_fe.iloc[:, 3:]).fit()
+      while True:
+        flag = True
+        for coef, t in zip(res_lr.params.index, res_lr.pvalues):
+          if t > 0.05:
+            lr_fe = lr_fe.drop(columns=[coef])
+            flag=False
+        if flag:
+          break
+        else:
+          if self.__lr_c:
+            res_lr = sm.OLS(lr_fe.loc[:, 'target'], sm.add_constant(lr_fe.iloc[:, 3:])).fit()
+          else:
+            res_lr = sm.OLS(lr_fe.loc[:, 'target'], lr_fe.iloc[:, 3:]).fit()
+      
       return res_lr
     else:
       lr_fe = self.build_FE()
@@ -434,32 +445,15 @@ class FECM:
         lr_re_matrix = self.build_GLS(resid)
         return sm.GLS(self.__lr_df.loc[:, 'target'], self.__lr_df.iloc[:, 3:], lr_re_matrix).fit()
   
-  def select_ar(self) -> Any:
-    current_d = self.__lag+1
-    while current_d >= 1:
-      frame = pd.DataFrame(self.__means.target_avg)
-      temp = []
-      for lag in range(1, current_d+1):
-        frame.loc[:, f'y_avg{lag}'] = frame['target_avg'].shift(lag)
-        temp.append(f'y_avg{lag}')
-      frame = frame.dropna()
-      part_res = sm.OLS(frame.target_avg, frame[temp]).fit()
-      if part_res.pvalues[temp[-1]] < 0.05:
-        break
-      else:
-        current_d -=1
-    print(f'Selected AR lag amount: {current_d}')
-    return part_res
   
   def get_ccemg_frames(self, max_lag: int) -> list[pd.DataFrame]:
     subdfs = []
     for unit in self.__df.SpUnit.unique():
       subdf = self.__df[self.__df.SpUnit == unit].copy(deep=True)
-      if self.__x_difs:
-        for var in self.__l:
-          subdf[f'{var}_lag1'] = subdf[var].shift(1)
-          subdf[f'{var}_diff'] = subdf[var]- subdf[f'{var}_lag1']
-          subdf = subdf.drop(columns = [f'{var}_lag1'])
+      for var in self.__l:
+        subdf[f'{var}_lag1'] = subdf[var].shift(1)
+        subdf[f'{var}_diff'] = subdf[var]- subdf[f'{var}_lag1']
+        subdf = subdf.drop(columns = [f'{var}_lag1'])
       subdf['target_lag1'] = subdf['target'].shift(1)
       subdf.insert(2, 'target_diff', subdf['target'] - subdf['target_lag1'])
       subdf = subdf.drop(columns = ['target_lag1', *self.__l, 'target'])
@@ -475,11 +469,10 @@ class FECM:
     subdfs = []
     for unit in self.__df.SpUnit.unique():
       subdf = self.__df[self.__df.SpUnit == unit].copy(deep=True)
-      if self.__x_difs:
-        for var in self.__l:
-          subdf[f'{var}_lag1'] = subdf[var].shift(1)
-          subdf[f'{var}_diff'] = subdf[var]- subdf[f'{var}_lag1']
-          subdf = subdf.drop(columns = [f'{var}_lag1'])
+      for var in self.__l:
+        subdf[f'{var}_lag1'] = subdf[var].shift(1)
+        subdf[f'{var}_diff'] = subdf[var]- subdf[f'{var}_lag1']
+        subdf = subdf.drop(columns = [f'{var}_lag1'])
       subdf['target_lag1'] = subdf['target'].shift(1)
       subdf.insert(2, 'target_diff', subdf['target'] - subdf['target_lag1'])
       subdf = subdf.drop(columns = ['target_lag1', *self.__l, 'target'])
@@ -490,24 +483,27 @@ class FECM:
       subdfs.append(subdf.dropna())
     return subdfs
       
-  def build_sr(self) -> pd.DataFrame:
-    self.__df = pd.concat([self.__df, pd.Series(self.__lr.resid, name='error')], axis=1)
+  def build_sr(self, drop: list  = []) -> pd.DataFrame:
     est = []
     if self.__method == 'ccemg':
-      units = self.get_ccemg_frames(self.__lag)
-      for model in units:
+      units = self.__ccemg_units
+      for i, model in enumerate(units):
+        model = model.drop(columns=drop)
         if self.__C:
           est.append(sm.OLS(model['target_diff'], sm.add_constant(model.iloc[:, 3:])).fit())
         else:
           est.append(sm.OLS(model['target_diff'], model.iloc[:, 3:]).fit())
+        self.__ccemg_units[i] = self.__ccemg_units[i].drop(columns=drop)
       return est
     elif self.__method == 'mg':
-      units = self.get_mg_frames(self.__lag)
-      for model in units:
+      units = self.__mg_units
+      for i, model in enumerate(units):
+        model = model.drop(columns=drop)
         if self.__C:
           est.append(sm.OLS(model['target_diff'], sm.add_constant(model.iloc[:, 3:])).fit())
         else:
           est.append(sm.OLS(model['target_diff'], model.iloc[:, 3:]).fit())
+        self.__ccemg_units[i] = self.__ccemg_units[i].drop(columns=drop)
       return est
     elif self.__method == 'ccep':
       units = self.get_ccemg_frames(self.__lag)
@@ -516,42 +512,69 @@ class FECM:
         est.append(sm.OLS(pool['target_diff'], sm.add_constant(pool.iloc[:, 3:])).fit())
       else:
         est.append(sm.OLS(pool['target_diff'], pool.iloc[:, 3:]).fit())
+      if self.__autorem:
+        while True:
+          flag = True
+          if max(zip(est[0].params.index, est[0].pvalues), key=lambda x: x[1])[1] > 0.06:
+            pool = pool.drop(columns=[max(zip(est[0].params.index, est[0].pvalues), key=lambda x: x[1])[0]])
+            flag=False
+          if flag:
+            break
+          else:
+            if self.__C:
+              est[0] = sm.OLS(pool['target_diff'], sm.add_constant(pool.iloc[:, 3:])).fit()
+            else:
+              est[0] = sm.OLS(pool['target_diff'], pool.iloc[:, 3:]).fit()
       return est
 
+  def mg_algorithm(self) -> pd.DataFrame:
+    coefs = []
+    rsq = []
+    for result in self.__sr:
+      coefs.append(result.params)
+      rsq.append(result.rsquared)
+    coef_mean = pd.concat(coefs, axis=1).mean(axis=1)
+    coef_mean.name = 'Mean Coefs'
+    coef_std = pd.concat(coefs, axis=1).std(axis=1)
+    coef_mse = coef_std/np.sqrt(self.__N)
+    t_means = coef_mean / coef_mse
+    mg_W = sc.chi2(self.__exog).sf(np.sum(coef_mean**2 / coef_mse**2))
+    tpvalues_mean = t_means.apply(lambda x: 2*min(sc.t(self.__N-1).cdf(x), sc.t(self.__N-1).sf(x)))
+    tpvalues_mean.name = 'T-pvalues'
+    rsq_mean = np.array(rsq).mean()
+    res = {
+      'Rsquared': rsq_mean,
+      'W_Pvalue': mg_W,
+      'coefs': pd.concat([coef_mean, tpvalues_mean], axis=1)
+    }
+    return res
+  
   def fit(self) -> dict:
     dct = dict()
     if self.__method == 'ccep':
       dct['sr_res'] = self.__sr[0]
       dct['lr_res'] = self.__lr
-      dct['ar'] = self.__ar
     elif self.__method == 'ccemg' or self.__method == 'mg':
       dct['lr_res'] = self.__lr
-      if self.__method == 'ccemg':
-        dct['ar'] = self.__ar
-      coefs = []
-      rsq = []
-      for result in self.__sr:
-        coefs.append(result.params)
-        rsq.append(result.rsquared)
-      coef_mean = pd.concat(coefs, axis=1).mean(axis=1)
-      coef_mean.name = 'Mean Coefs'
-      coef_std = pd.concat(coefs, axis=1).std(axis=1)
-      coef_mse = coef_std/np.sqrt(self.__N)
-      t_means = coef_mean / coef_mse
-      mg_W = sc.chi2(self.__exog).sf(np.sum(coef_mean**2 / coef_mse**2))
-      tpvalues_mean = t_means.apply(lambda x: 2*min(sc.t(self.__N-1).cdf(x), sc.t(self.__N-1).sf(x)))
-      tpvalues_mean.name = 'T-pvalues'
-      rsq_mean = np.array(rsq).mean()
-      res = {
-        'Rsquared': rsq_mean,
-        'W_Pvalue': mg_W,
-        'coefs': pd.concat([coef_mean, tpvalues_mean], axis=1)
-      }
+      res = self.mg_algorithm()
+      if self.__autorem:
+        while True:
+          flag = True
+          if max(zip(res['coefs'].index, res['coefs']['T-pvalues']), key=lambda x: x[1])[1] > 0.06:
+            self.__sr = self.build_sr([max(zip(res['coefs'].index, res['coefs']['T-pvalues']), key=lambda x: x[1])[0]])
+            flag=False
+          if flag:
+            break
+          else:
+            res =  self.mg_algorithm()
+
       dct['sr_res'] = res
     return dct
   
   def __del__(self) -> None:
     pass
+
+
 
 
 class CDTwoWay:
