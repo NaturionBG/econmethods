@@ -312,6 +312,9 @@ class FECM:
   - *stat_vars*: a DataFrame of the same format as "df" - includes variables that will not be differenced and included into the ECM in their raw form. Ensure these variables are I(0). Defaults to None.
   - *lr_const*: Specify whether the long-run model should have a constant.
   - *autorem*: Enables/Disables automatic removal of insignificant regression coefficients in the ECM. Defaults to True.
+  - *remove_difs*: Remove the cointegration vector differences. Enabling this invalidates autorem. Defaults to False.
+  - *remove_lr_ins*: Enables/Disables automatic removal of insignificant regression coefficients in the long-run model. Defaults to False.
+  - *sf*: Your significance level.
   ----
   RETURNS:
   --
@@ -321,20 +324,23 @@ class FECM:
     If a CCE- method is chosen:
     - The AR(d) estimation results to forecast the cross-sectional mean | key = "ar"
   '''
-  def __init__(self, df: pd.DataFrame, effects: str = 'rand', trend: int = 0, n_lags: int = 1, method: str = 'MG', coint: str | list[str] = 'x1', intercept: bool = True, stat_vars: pd.DataFrame|None = None, lr_const: bool = False, autorem: bool = True) -> None:
+  def __init__(self, df: pd.DataFrame, effects: str = 'rand', trend: int = 0, n_lags: int = 1, method: str = 'MG', coint: str | list[str] = 'x1', intercept: bool = True, stat_vars: pd.DataFrame|None = None, lr_const: bool = False, autorem: bool = True, remove_difs: bool = False, remove_lr_ins: bool = False, sf: float = 0.05) -> None:
     self.__df = df
     self.__eff = effects.lower()
     self.__t = trend
     self.__autorem = autorem
     self.__C = intercept
     self.__lag = n_lags
+    self.sf = sf
     self.x_difs = []
+    self.__remove_difs = remove_difs
     self.__method = method.lower()
     self.__exog = len(df.columns[3:])
     self.__l =[]
     self.__stat_vars = stat_vars
     self.__mean_names = ['target_avg_l1']
     self.__stat = []
+    self.__lr_autorem = remove_lr_ins
     self.__lr_c = lr_const
     if stat_vars is not None:
       for i in range(1, len(stat_vars.columns[2:])+1):
@@ -420,20 +426,20 @@ class FECM:
         res_lr = sm.OLS(lr_fe.loc[:, 'target'], sm.add_constant(lr_fe.iloc[:, 3:])).fit()
       else:
         res_lr = sm.OLS(lr_fe.loc[:, 'target'], lr_fe.iloc[:, 3:]).fit()
-      while True:
-        flag = True
-        for coef, t in zip(res_lr.params.index, res_lr.pvalues):
-          if t > 0.05:
-            lr_fe = lr_fe.drop(columns=[coef])
-            flag=False
-        if flag:
-          break
-        else:
-          if self.__lr_c:
-            res_lr = sm.OLS(lr_fe.loc[:, 'target'], sm.add_constant(lr_fe.iloc[:, 3:])).fit()
+      if self.__lr_autorem:
+        while True:
+          flag = True
+          for coef, t in zip(res_lr.params.index, res_lr.pvalues):
+            if t > self.sf:
+              lr_fe = lr_fe.drop(columns=[coef])
+              flag=False
+          if flag:
+            break
           else:
-            res_lr = sm.OLS(lr_fe.loc[:, 'target'], lr_fe.iloc[:, 3:]).fit()
-      
+            if self.__lr_c:
+              res_lr = sm.OLS(lr_fe.loc[:, 'target'], sm.add_constant(lr_fe.iloc[:, 3:])).fit()
+            else:
+              res_lr = sm.OLS(lr_fe.loc[:, 'target'], lr_fe.iloc[:, 3:]).fit()
       return res_lr
     else:
       lr_fe = self.build_FE()
@@ -514,27 +520,34 @@ class FECM:
       else:
         est.append(sm.OLS(pool['target_diff'], pool.iloc[:, 3:]).fit())
       if self.__autorem:
-        while True:
-          ts = []
-          flag = True
-          if max(zip(est[0].params.index, est[0].pvalues), key=lambda x: x[1])[1] > 0.06:
-            pool = pool.drop(columns=[max(zip(est[0].params.index, est[0].pvalues), key=lambda x: x[1])[0]])
-            flag=False
-          for i in self.x_difs:
-            try:
-              tmp = est[0].pvalues[i] <= 0.05
-              if tmp:
+        if not self.__remove_difs:
+          while True:
+            ts = []
+            flag = True
+            if max(zip(est[0].params.index, est[0].pvalues), key=lambda x: x[1])[1] > self.sf:
+              pool = pool.drop(columns=[max(zip(est[0].params.index, est[0].pvalues), key=lambda x: x[1])[0]])
+              flag=False
+            for i in self.x_difs:
+              try:
+                tmp = est[0].pvalues[i] <= self.sf
+                if tmp:
+                  ts.append(1)
+              except Exception:
                 ts.append(1)
-            except Exception:
-              ts.append(1)
-              
-          if flag or len(ts) == len(self.x_difs):
-            break
-          else:
-            if self.__C:
-              est[0] = sm.OLS(pool['target_diff'], sm.add_constant(pool.iloc[:, 3:])).fit()
+                
+            if flag or len(ts) == len(self.x_difs):
+              break
             else:
-              est[0] = sm.OLS(pool['target_diff'], pool.iloc[:, 3:]).fit()
+              if self.__C:
+                est[0] = sm.OLS(pool['target_diff'], sm.add_constant(pool.iloc[:, 3:])).fit()
+              else:
+                est[0] = sm.OLS(pool['target_diff'], pool.iloc[:, 3:]).fit()
+        else:
+          pool = pool.drop(columns=[self.x_difs])
+          if self.__C:
+            est[0] = sm.OLS(pool['target_diff'], sm.add_constant(pool.iloc[:, 3:])).fit()
+          else:
+            est[0] = sm.OLS(pool['target_diff'], pool.iloc[:, 3:]).fit()
       return est
 
   def mg_algorithm(self) -> pd.DataFrame:
@@ -568,29 +581,35 @@ class FECM:
       dct['lr_res'] = self.__lr
       res = self.mg_algorithm()
       if self.__autorem:
-        while True:
-          ts = []
-          flag = True
-          if max(zip(res['coefs'].index, res['coefs']['T-pvalues']), key=lambda x: x[1])[1] > 0.06:
-            self.__sr = self.build_sr([max(zip(res['coefs'].index, res['coefs']['T-pvalues']), key=lambda x: x[1])[0]])
-            flag=False
-          for i in self.x_difs:
-            try:
-              tmp = res['coefs']['T-pvalues'][i] <= 0.05
-              if tmp:
+        if not self.__remove_difs:
+          while True:
+            ts = []
+            flag = True
+            if max(zip(res['coefs'].index, res['coefs']['T-pvalues']), key=lambda x: x[1])[1] > self.sf:
+              self.__sr = self.build_sr([max(zip(res['coefs'].index, res['coefs']['T-pvalues']), key=lambda x: x[1])[0]])
+              flag=False
+            for i in self.x_difs:
+              try:
+                tmp = res['coefs']['T-pvalues'][i] <= 0.1
+                if tmp:
+                  ts.append(1)
+              except Exception:
                 ts.append(1)
-            except Exception:
-              ts.append(1)
-          if flag or len(ts) == len(self.x_difs):
-            break
-          else:
-            res =  self.mg_algorithm()
+            if flag or len(ts) == len(self.x_difs):
+              break
+            else:
+              res =  self.mg_algorithm()
+        else:
+          self.__sr = self.build_sr([self.x_difs])
+          res = self.mg_algorithm()
+          
 
       dct['sr_res'] = res
     return dct
   
   def __del__(self) -> None:
     pass
+
 class CDTwoWay:
   '''
   Implementation of the CD test to validate/reject cross-sectional dependence.
