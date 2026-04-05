@@ -278,7 +278,6 @@ class HausmanOneWay:
   def __del__(self) -> None:
     pass
 
-
 class FECM:
   '''
   The implementation of a first-order ECM (Error Correction Model) estimation for panel data.
@@ -329,6 +328,7 @@ class FECM:
     self.__autorem = autorem
     self.__C = intercept
     self.__lag = n_lags
+    self.x_difs = []
     self.__method = method.lower()
     self.__exog = len(df.columns[3:])
     self.__l =[]
@@ -342,6 +342,7 @@ class FECM:
       self.__stat_vars.columns = ['SpUnit', 'time'] + self.__stat
     for i in range(1, self.__exog+1):
       self.__l.append(f'x{i}')
+      self.x_difs.append(f'x{i}_diff')
       self.__mean_names.append(f'x{i}_avg')
     self.__df.columns = ['SpUnit', 'time', 'target'] + self.__l
     if isinstance(coint, list):
@@ -514,11 +515,20 @@ class FECM:
         est.append(sm.OLS(pool['target_diff'], pool.iloc[:, 3:]).fit())
       if self.__autorem:
         while True:
+          ts = []
           flag = True
           if max(zip(est[0].params.index, est[0].pvalues), key=lambda x: x[1])[1] > 0.06:
             pool = pool.drop(columns=[max(zip(est[0].params.index, est[0].pvalues), key=lambda x: x[1])[0]])
             flag=False
-          if flag:
+          for i in self.x_difs:
+            try:
+              tmp = est[0].pvalues[i] <= 0.05
+              if tmp:
+                ts.append(1)
+            except Exception:
+              ts.append(1)
+              
+          if flag or len(ts) == len(self.x_difs):
             break
           else:
             if self.__C:
@@ -559,11 +569,19 @@ class FECM:
       res = self.mg_algorithm()
       if self.__autorem:
         while True:
+          ts = []
           flag = True
           if max(zip(res['coefs'].index, res['coefs']['T-pvalues']), key=lambda x: x[1])[1] > 0.06:
             self.__sr = self.build_sr([max(zip(res['coefs'].index, res['coefs']['T-pvalues']), key=lambda x: x[1])[0]])
             flag=False
-          if flag:
+          for i in self.x_difs:
+            try:
+              tmp = res['coefs']['T-pvalues'][i] <= 0.05
+              if tmp:
+                ts.append(1)
+            except Exception:
+              ts.append(1)
+          if flag or len(ts) == len(self.x_difs):
             break
           else:
             res =  self.mg_algorithm()
@@ -573,10 +591,6 @@ class FECM:
   
   def __del__(self) -> None:
     pass
-
-
-
-
 class CDTwoWay:
   '''
   Implementation of the CD test to validate/reject cross-sectional dependence.
