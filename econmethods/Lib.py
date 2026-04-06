@@ -312,19 +312,18 @@ class FECM:
   - *stat_vars*: a DataFrame of the same format as "df" - includes variables that will not be differenced and included into the ECM in their raw form. Ensure these variables are I(0). Defaults to None.
   - *lr_const*: Specify whether the long-run model should have a constant.
   - *autorem*: Enables/Disables automatic removal of insignificant regression coefficients in the ECM. Defaults to True.
-  - *remove_difs*: Remove the cointegration vector differences. Enabling this invalidates autorem. Defaults to False.
+  - *remove_difs*: Remove the cointegration vector differences. Enabling this invalidates autorem. Passing a string removes that exact variable. Defaults to False.
   - *remove_lr_ins*: Enables/Disables automatic removal of insignificant regression coefficients in the long-run model. Defaults to False.
   - *sf*: Your significance level.
+  - *cont_means*: Enable/disable contemporanous means for the CCE- framework. Disabling will cause all means to be lagged by one period. Defaults to True.
   ----
   RETURNS:
   --
   A python dictionary (dict) containing:
     - Long-run estimation results | key = "lr_res"
     - ECM (short-run) estimation results | key = "sr_res"\n
-    If a CCE- method is chosen:
-    - The AR(d) estimation results to forecast the cross-sectional mean | key = "ar"
   '''
-  def __init__(self, df: pd.DataFrame, effects: str = 'rand', trend: int = 0, n_lags: int = 1, method: str = 'MG', coint: str | list[str] = 'x1', intercept: bool = True, stat_vars: pd.DataFrame|None = None, lr_const: bool = False, autorem: bool = True, remove_difs: bool = False, remove_lr_ins: bool = False, sf: float = 0.05) -> None:
+  def __init__(self, df: pd.DataFrame, effects: str = 'rand', trend: int = 0, n_lags: int = 1, method: str = 'MG', coint: str | list[str] = 'x1', intercept: bool = True, stat_vars: pd.DataFrame|None = None, lr_const: bool = False, autorem: bool = True, remove_difs: bool | list[str] = False, remove_lr_ins: bool = False, sf: float = 0.05, cont_means: bool = True) -> None:
     self.__df = df
     self.__eff = effects.lower()
     self.__t = trend
@@ -333,12 +332,20 @@ class FECM:
     self.__lag = n_lags
     self.sf = sf
     self.x_difs = []
-    self.__remove_difs = remove_difs
+    self.__cont_means = cont_means
+    if type(remove_difs) == bool:
+      self.__remove_difs = remove_difs
+    else:
+      self.x_difs = np.array(remove_difs)+'_diff'
+      self.__remove_difs = True
     self.__method = method.lower()
     self.__exog = len(df.columns[3:])
     self.__l =[]
     self.__stat_vars = stat_vars
-    self.__mean_names = ['target_avg_l1']
+    if not self.__cont_means:
+      self.__mean_names = ['target_avg_l1']
+    else:
+      self.__mean_names = ['target_avg']
     self.__stat = []
     self.__lr_autorem = remove_lr_ins
     self.__lr_c = lr_const
@@ -348,8 +355,12 @@ class FECM:
       self.__stat_vars.columns = ['SpUnit', 'time'] + self.__stat
     for i in range(1, self.__exog+1):
       self.__l.append(f'x{i}')
-      self.x_difs.append(f'x{i}_diff')
-      self.__mean_names.append(f'x{i}_avg')
+      if type(remove_difs) == bool:
+        self.x_difs.append(f'x{i}_diff')
+      if self.__cont_means:
+        self.__mean_names.append(f'x{i}_avg')
+      else:
+        self.__mean_names.append(f'x{i}_avg_1')
     self.__df.columns = ['SpUnit', 'time', 'target'] + self.__l
     if isinstance(coint, list):
       self.__lr_df = self.__df.copy(deep=True).loc[:, ['SpUnit', 'time', 'target', *coint]]
@@ -393,9 +404,11 @@ class FECM:
   def build_means(self) -> pd.DataFrame:
     mn = self.__df.copy(deep=True)
     mn = mn.set_index('time')
-    means = mn.groupby('time')[['target'] + self.__l].mean()
+    if not self.__cont_means:
+      means = mn.groupby('time')[['target'] + self.__l].mean().shift(1)
+    else:
+      means = mn.groupby('time')[['target'] + self.__l].mean()
     means.columns = self.__mean_names
-    means['target_avg_l1'] = means['target_avg_l1'].shift(1)
     return means
   
   def build_GLS(self, w_err: float) -> np.ndarray:
@@ -543,7 +556,7 @@ class FECM:
               else:
                 est[0] = sm.OLS(pool['target_diff'], pool.iloc[:, 3:]).fit()
         else:
-          pool = pool.drop(columns=[self.x_difs])
+          pool = pool.drop(columns=[*self.x_difs])
           if self.__C:
             est[0] = sm.OLS(pool['target_diff'], sm.add_constant(pool.iloc[:, 3:])).fit()
           else:
@@ -600,7 +613,7 @@ class FECM:
             else:
               res =  self.mg_algorithm()
         else:
-          self.__sr = self.build_sr([self.x_difs])
+          self.__sr = self.build_sr(self.x_difs)
           res = self.mg_algorithm()
           
 
