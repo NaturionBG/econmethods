@@ -444,7 +444,10 @@ class FECM:
           flag = True
           for coef, t in zip(res_lr.params.index, res_lr.pvalues):
             if t > self.sf:
-              lr_fe = lr_fe.drop(columns=[coef])
+              if coef != 'const':
+                lr_fe = lr_fe.drop(columns=[coef])
+              else:
+                self.__lr_c = False
               flag=False
           if flag:
             break
@@ -508,22 +511,38 @@ class FECM:
     if self.__method == 'ccemg':
       units = self.__ccemg_units
       for i, model in enumerate(units):
-        model = model.drop(columns=drop)
+        if 'const' not in drop:
+          model = model.drop(columns=drop)
+        else:
+          self.__C = False
+          drop.remove('const')
         if self.__C:
           est.append(sm.OLS(model['target_diff'], sm.add_constant(model.iloc[:, 3:])).fit())
         else:
           est.append(sm.OLS(model['target_diff'], model.iloc[:, 3:]).fit())
-        self.__ccemg_units[i] = self.__ccemg_units[i].drop(columns=drop)
+        if 'const' not in drop:
+          self.__ccemg_units[i] = self.__ccemg_units[i].drop(columns=drop)
+        else:
+          self.__C = False
+          drop = drop.remove('const')
       return est
     elif self.__method == 'mg':
       units = self.__mg_units
       for i, model in enumerate(units):
-        model = model.drop(columns=drop)
+        if 'const' not in drop:
+          model = model.drop(columns=drop)
+        else:
+          self.__C = False
+          drop.remove('const')
         if self.__C:
           est.append(sm.OLS(model['target_diff'], sm.add_constant(model.iloc[:, 3:])).fit())
         else:
           est.append(sm.OLS(model['target_diff'], model.iloc[:, 3:]).fit())
-        self.__ccemg_units[i] = self.__ccemg_units[i].drop(columns=drop)
+        if 'const' not in drop:
+          self.__mg_units[i] = self.__mg_units[i].drop(columns=drop)
+        else:
+          self.__C = False
+          drop.remove('const')
       return est
     elif self.__method == 'ccep':
       units = self.get_ccemg_frames(self.__lag)
@@ -538,7 +557,11 @@ class FECM:
             ts = []
             flag = True
             if max(zip(est[0].params.index, est[0].pvalues), key=lambda x: x[1])[1] > self.sf:
-              pool = pool.drop(columns=[max(zip(est[0].params.index, est[0].pvalues), key=lambda x: x[1])[0]])
+              to_drop = max(zip(est[0].params.index, est[0].pvalues), key=lambda x: x[1])[0]
+              if to_drop != 'const':
+                pool = pool.drop(columns=[to_drop])
+              else:
+                self.__C = False
               flag=False
             for i in self.x_difs:
               try:
