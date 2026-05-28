@@ -701,41 +701,31 @@ class CDTwoWay:
       print(f'p-value = {pval} < alpha = {self.__alpha}\n There is Significant Cross-Sectional Dependence in your data according to the CD-test. \n Significance level: {self.__alpha*100}%')
     else:
       print(f'p-value = {pval} > alpha = {self.__alpha} There is No Significant Cross-Sectional Dependence in your data according to the CD-test. \n Significance level: {self.__alpha*100}%')
-
-
 class SlopeHomogeneityF:
   '''
-  <h2>The implementation of the F-test for data slope Homogeneity in panel data.</h2>
-  <hr>
-  <h2>Hypotheses:</h2>
-  <hr>
-  <ul>
-  <li> <em>H0</em>: b_i = b_j given that i != j</li>
-  <li><em>H_1</em>: b_i != b_j for at least one such pair of (i, j) that i != j </li>
-  </ul>
-  <hr>
-  <h2>PARAMETERS:</h2>
-  <hr>
-  <ul>
-  <li> <strong>df</strong>: a Pandas DataFrame containing panel data. Make sure your data is structured in this exact order (by column index):
-    <ul>
-    <li>0 - Spatial units. The data must be homogenous, e.g. only cities, contries, regions, etc.</li>
-    <li>1 - Temporal units. The data must be homogenous, e.g. only years, months, quarters, etc.</li>
-    <li>2 - Your target/endogenous variable. The data must not contain NaN values.</li>
-    <li>3+ - Your exogenous variables. The data must not contain NaN values.</li>
-    </ul>
-  <li> <strong>level</strong>: Your significance level to test at. Defaults to 5%.</li>
-  <li> <strong>intercept</strong>: Specify whether your model has an intercept. Defaults to True.</li>
-  <li> <strong>skip_premise</strong>: Set to True if you wish to ignore heteroskedasticity. Not a recommended option, parameter defaults to False</li>
-  </ul>
-  <hr>
-    <h3><em>Note that this test has got certain assumptions, such as error homoskedasticity, N < T.
-     The <FTwoWay> instance will check for these conditions to be met, and will yield an error if they are not.</em></h3>
-  <hr>
-  <h2>RETURNS:</h2>
-  <ol>
-  <li>Via the instance.verdict() method - prints the result of the F-test.</li>
-  </ol>
+  The implementation of the F-test for data slope Homogeneity in panel data.
+  ---
+  Hypotheses:
+  ---
+  + H0: b_i = b_j given that i != j
+  + H_1: b_i != b_j for at least one such pair of (i, j) that i != j
+  ---
+  PARAMETERS:
+  ---
+  - **df:** a Pandas DataFrame containing panel data. Make sure your data is structured in this exact order (by column index):
+    + 0 - Spatial units. The data must be homogenous, e.g. only cities, contries, regions, etc.
+    + 1 - Temporal units. The data must be homogenous, e.g. only years, months, quarters, etc.
+    + 2 - Your target/endogenous variable. The data must not contain NaN values.
+    + 3+ - Your exogenous variables. The data must not contain NaN values.
+  - **level:** Your significance level to test at. Defaults to 5%.
+  - **intercept:** Specify whether your model has an intercept. Defaults to True.
+  - **skip_premise:** Set to True if you wish to ignore heteroskedasticity. Not a recommended option, parameter defaults to False
+    *Note that this test has got certain assumptions, such as error homoskedasticity, N < T.
+     The <FTwoWay> instance will check for these conditions to be met, and will yield an error if they are not.*
+  ---
+  **RETURNS:**
+
+  + Via the instance.verdict() method - prints the result of the F-test.
   '''
   def __init__(self, df: pd.DataFrame, level: int = 5, intercept: bool = True, skip_premise: bool = False) -> None:
     self.__df = df
@@ -787,4 +777,4 @@ class SlopeHomogeneityF:
     
   def __del__(self) -> None:
     pass
-  
+
