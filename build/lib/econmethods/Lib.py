@@ -188,7 +188,7 @@ class CipsTest:
     pass
 
 
-class HausmanOneWay:
+class Hausman:
   '''
   Implementation of the Hausman procedure to test whether it is more feasible to used random effects against fixed effects.
   -
@@ -217,66 +217,77 @@ class HausmanOneWay:
   - Via instance.verdict() prints the verdict of the Hausman test according to the given parameters.
   '''
   def __init__(self, data: pd.DataFrame, force_GLS: bool = False, level: int = 5) -> None:
-    self.__df = data
-    self.__exog = len(data.columns[3:])
-    self.__l =[]
-    self.__fgls = force_GLS
-    for i in range(1, self.__exog+1):
-      self.__l.append(f'x{i}')
-    self.__df.columns = ['SpUnit', 'time', 'target'] + self.__l
-    self.__alpha = level/100
-    self.__RE = 'GLS'
-    self.__T = len(self.__df.time.unique())
-    self.__N = len(self.__df.SpUnit.unique())
-    
-    
+      self.__df = data
+      self.__exog = len(data.columns[3:])
+      self.__l = []
+      self.__fgls = force_GLS
+      for i in range(1, self.__exog+1):
+          self.__l.append(f'x{i}')
+      self.__df.columns = ['SpUnit', 'time', 'target'] + self.__l
+      self.__alpha = level/100
+      self.__RE = 'GLS'
+      self.__T = len(self.__df.time.unique())
+      self.__N = len(self.__df.SpUnit.unique())
+
   def build_FE(self) -> pd.DataFrame:
-    fe = self.__df.copy(deep=True)
-    for i, unit in enumerate(self.__df.SpUnit.unique()[1:]):
-      fe.loc[:, f'd{i}'] = np.where(fe.SpUnit == unit, 1, 0)
-    return fe.iloc[:, 2:]
-  
-  def build_GLS(self, w_err: float) -> pd.DataFrame | None:
-    re = self.__df.copy(deep=True)
-    sigma2 = np.sum((sm.OLS(re.iloc[:, 2], sm.add_constant(re.iloc[:, 3:])).fit()).resid**2) / (self.__N*self.__T - self.__exog)
-    sigma_u = sigma2 - w_err
-    if sigma_u <= 0:
-      sigma_u = 0
-    elif sigma_u > 0:
-      if not self.__fgls:
-        self.__RE = 'MLE'
-        return None
-    sig = np.full((self.__T, self.__T), sigma_u)
-    np.fill_diagonal(sig, sigma2)
-    matrix = np.kron(np.eye(self.__N), sig)
-    return matrix
-      
-      
+      fe = self.__df.copy(deep=True)
+      for i, unit in enumerate(self.__df.SpUnit.unique()):
+          fe.loc[:, f'd{i}'] = np.where(fe.SpUnit == unit, 1, 0)
+      return fe.iloc[:, 2:]
+
+  def build_GLS(self, w_err: float) -> np.ndarray | None:
+      re = self.__df.groupby('SpUnit')[self.__df.columns[2:]].mean()
+      temp = sm.OLS(re.iloc[:, 0], sm.add_constant(re.iloc[:, 1:])).fit()
+      sigma2 = temp.ssr / temp.df_resid
+      sigma_u = sigma2 - w_err / self.__T
+      if sigma_u <= 0:
+          sigma_u = 0
+      elif sigma_u > 0:
+          if not self.__fgls:
+              self.__RE = 'MLE'
+              return None
+      sig = np.full((self.__T, self.__T), sigma_u)
+      np.fill_diagonal(sig, sigma_u + w_err)
+      matrix = np.kron(np.eye(self.__N), sig)
+      return matrix
+
   def estimate(self) -> float:
     fe_df = self.build_FE()
-    Chi = 0
-    fe_res = sm.OLS(fe_df.iloc[:, 0], sm.add_constant(fe_df.iloc[:, 1:])).fit()
-    matrix = self.build_GLS(np.sum(fe_res.resid**2) / (self.__N*(self.__T-1) - self.__exog))
+    fe_res = sm.OLS(fe_df.iloc[:, 0], fe_df.iloc[:, 1:]).fit()
+    matrix = self.build_GLS(fe_res.mse_resid)
     if matrix is not None:
-      re_res = sm.GLS(self.__df.iloc[:, 2], sm.add_constant(self.__df.iloc[:, 3:]), matrix).fit()
+        re_res = sm.GLS(self.__df.iloc[:, 2], sm.add_constant(self.__df.iloc[:, 3:]), matrix).fit()
     else:
-      re_res = sm.MixedLM(self.__df['target'], sm.add_constant(self.__df[self.__l]), groups=self.__df.SpUnit).fit(reml = True, maxiter=100_00)
-    for b_fe, b_re, var_fe, var_re in zip(fe_res.params[1:], re_res.params[1:], fe_res.bse[1:]**2, re_res.bse[1:]**2):
-      Chi += (b_fe - b_re)**2 / (var_fe - var_re)
-    
-    return Chi
-  
+        re_res = sm.MixedLM(self.__df['target'], sm.add_constant(self.__df[self.__l]), groups=self.__df.SpUnit).fit(reml=False, maxiter=100_00)
+    x_names = self.__l
+    fe_params = fe_res.params
+    fe_cov = fe_res.cov_params()
+    fe_params_x = fe_params[x_names]
+    fe_cov_x = fe_cov.loc[x_names, x_names].values
+    re_params = re_res.params
+    re_cov = re_res.cov_params()
+    if 'const' in re_params.index:
+        re_params_x = re_params[x_names]
+        re_cov_x = re_cov.loc[x_names, x_names].values
+    else:
+        re_params_x = re_params[x_names]
+        re_cov_x = re_cov.loc[x_names, x_names].values
+    d = fe_params_x - re_params_x
+    V = fe_cov_x - re_cov_x
+    try:
+        chi2 = d.T @ np.linalg.inv(V) @ d
+    except np.linalg.LinAlgError:
+        chi2 = d.T @ np.linalg.pinv(V) @ d
+    return chi2
+
   def verdict(self) -> None:
-    Chi = self.estimate()
-    ch2 = sc.chi2(self.__exog)
-    p = ch2.sf(Chi)
-    if p < self.__alpha:
-      print(f'P-Value: {p} < Alpha: {self.__alpha}. \n According to the Hausman test, you should use the FE (Fixed Effects) model. \n RE estimator: {self.__RE}')
-    else:
-      print(f'P-Value: {p} > Alpha: {self.__alpha}. \n According to the Hausman test, you should use the RE (Random Effects) model. \n RE estimator: {self.__RE}')
-  
-  def __del__(self) -> None:
-    pass
+      Chi = self.estimate()
+      ch2 = sc.chi2(self.__exog)
+      p = ch2.sf(Chi)
+      if p < self.__alpha:
+          print(f'P-Value: {p} < Alpha: {self.__alpha}. \n According to the Hausman test, you should use the FE (Fixed Effects) model. \n RE estimator: {self.__RE}')
+      else:
+          print(f'P-Value: {p} > Alpha: {self.__alpha}. \n According to the Hausman test, you should use the RE (Random Effects) model. \n RE estimator: {self.__RE}')
 
 class FECM:
   '''
@@ -412,8 +423,8 @@ class FECM:
     return means
   
   def build_GLS(self, w_err: float) -> np.ndarray:
-    re = self.__lr_df.groupby('region')[self.__lr_df.columns[2:]].mean()
-    temp = sm.OLS(re.iloc[:, 2], sm.add_constant(re.iloc[:, 3:])).fit()
+    re = self.__lr_df.groupby('SpUnit')[self.__lr_df.columns[2:]].mean()
+    temp = sm.OLS(re.iloc[:, 0], sm.add_constant(re.iloc[:, 1:])).fit()
     sigma2 = temp.ssr / temp.df_resid
     sigma_u = sigma2 - w_err/self.__T
     if sigma_u <= 0:
@@ -647,7 +658,7 @@ class FECM:
   def __del__(self) -> None:
     pass
 
-class CDTwoWay:
+class CDTest:
   '''
   Implementation of the CD test to validate/reject cross-sectional dependence.
   Hypotheses:
