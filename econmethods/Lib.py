@@ -412,13 +412,14 @@ class FECM:
     return means
   
   def build_GLS(self, w_err: float) -> np.ndarray:
-    re = self.__lr_df.copy(deep=True)
-    sigma2 = np.sum((sm.OLS(re.iloc[:, 2], sm.add_constant(re.iloc[:, 3:])).fit()).resid**2) / (self.__N*self.__T - self.__exog)
-    sigma_u = sigma2 - w_err
+    re = self.__lr_df.groupby('region')[self.__lr_df.columns[2:]].mean()
+    temp = sm.OLS(re.iloc[:, 2], sm.add_constant(re.iloc[:, 3:])).fit()
+    sigma2 = temp.ssr / temp.df_resid
+    sigma_u = sigma2 - w_err/self.__T
     if sigma_u <= 0:
       sigma_u = 0
     sig = np.full((self.__T, self.__T), sigma_u)
-    np.fill_diagonal(sig, sigma2)
+    np.fill_diagonal(sig, sigma_u+w_err)
     matrix = np.kron(np.eye(self.__N), sig)
     return matrix
   
@@ -460,11 +461,11 @@ class FECM:
     else:
       lr_fe = self.build_FE()
       if self.__lr_c:
-        resid = np.sum(sm.OLS(lr_fe.loc[:, 'target'], sm.add_constant(lr_fe.iloc[:, 3:])).fit().resid**2) / (self.__N*(self.__T - 1) - self.__exog)
+        resid = sm.OLS(lr_fe.loc[:, 'target'], sm.add_constant(lr_fe.iloc[:, 3:])).fit().mse_resid
         lr_re_matrix = self.build_GLS(resid)
         return sm.GLS(self.__lr_df.loc[:, 'target'], sm.add_constant(self.__lr_df.iloc[:, 3:]), lr_re_matrix).fit()
       else:
-        resid = np.sum(sm.OLS(lr_fe.loc[:, 'target'], lr_fe.iloc[:, 3:]).fit().resid**2) / (self.__N*(self.__T - 1) - self.__exog)
+        resid = sm.OLS(lr_fe.loc[:, 'target'], lr_fe.iloc[:, 3:]).fit().mse_resid
         lr_re_matrix = self.build_GLS(resid)
         return sm.GLS(self.__lr_df.loc[:, 'target'], self.__lr_df.iloc[:, 3:], lr_re_matrix).fit()
   
