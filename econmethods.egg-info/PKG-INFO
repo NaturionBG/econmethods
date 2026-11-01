@@ -1,21 +1,27 @@
 Metadata-Version: 2.4
 Name: econmethods
-Version: 3.0.6
+Version: 3.0.6.2
 Summary: A python package implementing various econometrical tests and estimators
 Home-page: https://github.com/NaturionBG/econmethods
 Author: NaturionBG
 Author-email: 7aegorsheryshev@gmail.com
 License: MIT
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.13
+Classifier: Programming Language :: Python :: 3.14
+Requires-Python: >=3.10
 Requires-Dist: statsmodels>=0.14.5
 Requires-Dist: numpy>=2.3.5
 Requires-Dist: pandas>=2.3.3
 Requires-Dist: scipy>=1.16.3
 Dynamic: author
 Dynamic: author-email
+Dynamic: classifier
 Dynamic: description
 Dynamic: home-page
 Dynamic: license
 Dynamic: requires-dist
+Dynamic: requires-python
 Dynamic: summary
 
 * econmethods
